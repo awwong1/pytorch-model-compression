@@ -14,6 +14,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 import torchvision.transforms as transforms
 from argparse import ArgumentParser
+from pprint import pformat
 from progress.bar import Bar
 from time import time
 from torch.utils.data import DataLoader
@@ -25,23 +26,25 @@ MODEL_ARCHS = {name: value for name, value in inspect.getmembers(
 USE_CUDA = torch.cuda.is_available()
 
 
-def main(args):
+def main(**args):
     # Preliminary Setup
     if USE_CUDA:
-        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    if args.manual_seed is not None:
-        random.seed(args.manual_seed)
-        torch.manual_seed(args.manual_seed)
+        os.environ["CUDA_VISIBLE_DEVICES"] = args["gpu_id"]
+    if args["manual_seed"] is not None:
+        random.seed(args["manual_seed"])
+        torch.manual_seed(args["manual_seed"])
         if USE_CUDA:
-            torch.cuda.manual_seed_all(args.manual_seed)
-    if not os.path.isdir(args.checkpoint):
-        os.makedirs(args.checkpoint, exist_ok=True)
+            torch.cuda.manual_seed_all(args["manual_seed"])
+    if not os.path.isdir(args["checkpoint"]):
+        os.makedirs(args["checkpoint"], exist_ok=True)
 
-    logging.basicConfig(level=args.verbosity, format="%(message)s")
+    logging.basicConfig(level=args["verbosity"], format="%(message)s")
     # format="%(asctime)s %(levelname)s %(message)s"
 
+    logging.info("• Options: %s", pformat(args))
+
     # Data
-    logging.info("Preparing dataset %(dataset)s", {"dataset": args.dataset})
+    logging.info("• Preparing '%(dataset)s' dataset", args)
     base_transforms = [
         transforms.ToTensor(),
         # https://github.com/kuangliu/pytorch-cifar/issues/19#issue-268972488
@@ -53,30 +56,29 @@ def main(args):
         transforms.RandomHorizontalFlip(),
     ] + base_transforms)
     test_transforms = transforms.Compose(base_transforms)
-    if args.dataset == "cifar10":
+    if args["dataset"] == "cifar10":
         data_class = datasets.CIFAR10
         num_classes = 10
-    elif args.dataset == "cifar100":
+    elif args["dataset"] == "cifar100":
         data_class = datasets.CIFAR100
         num_classes = 100
     else:
-        assert args.dataset in (
-            "cifar10", "cifar100"), f"Unsupported dataset: {args.dataset}"
+        assert args["dataset"] in (
+            "cifar10", "cifar100"), "Unsupported dataset: " + args["dataset"]
 
     trainset = data_class(root="./data", train=True,
                           download=True, transform=train_transforms)
     trainloader = DataLoader(
-        trainset, batch_size=args.train_batch, shuffle=True, num_workers=args.workers)
+        trainset, batch_size=args["train_batch"], shuffle=True, num_workers=args["workers"])
     testset = data_class(root="./data", train=False,
                          download=False, transform=test_transforms)
     testloader = DataLoader(
-        testset, batch_size=args.test_batch, shuffle=False, num_workers=args.workers)
+        testset, batch_size=args["test_batch"], shuffle=False, num_workers=args["workers"])
 
     # Model & Architecture
-    logging.info("Initializing model architecture \"%(arch)s\"",
-                 {"arch": args.arch})
+    logging.info("• Initializing '%(arch)s' architecture", args)
     # todo: don"t use imagenet defaults, reduce FC layers
-    model = MODEL_ARCHS.get(args.arch)(
+    model = MODEL_ARCHS.get(args["arch"])(
         pretrained=False, num_classes=num_classes)
     logging.debug("%(model)s", {"model": model})
 
@@ -89,49 +91,50 @@ def main(args):
     num_learnable = sum([p.numel()
                          for p in model.parameters() if p.requires_grad])
 
-    logging.info("Number of parameters: %(params)d (%(learnable)d learnable)", {
+    logging.info("• Number of parameters: %(params)d (%(learnable)d learnable)", {
                  "params": num_params, "learnable": num_learnable})
 
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
         model.parameters(),
-        lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        lr=args["lr"], momentum=args["momentum"], weight_decay=args["weight_decay"])
 
     # Resume & Initialize Progress Logger
-    title = f"{args.dataset}-{args.arch}"
-    if args.resume:
+    best_acc = 0
+    start_epoch = args["start_epoch"]
+    title = args["dataset"] + "-" + args["arch"]
+    if args["resume"]:
         logging.info("• Loading from checkpoint")
         assert os.path.isfile(
-            args.resume), f"Invalid checkpoint path: {args.resume}"
-        args.checkpoint = os.path.dirname(args.resume)
-        checkpoint = torch.load(args.resume)
+            args["resume"]), "Invalid checkpoint path: " + args["resume"]
+        args["checkpoint"] = os.path.dirname(args["resume"])
+        checkpoint = torch.load(args["resume"])
         best_acc = checkpoint["best_acc"]
         start_epoch = checkpoint["epoch"]
         model.load_state_dict(checkpoint["state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        scribe = Scribe(os.path.join(args.checkpoint,
+        scribe = Scribe(os.path.join(args["checkpoint"],
                                      "progress.txt"), title=title, resume=True)
     else:
-        best_acc = 0
-        start_epoch = args.start_epoch
-        scribe = Scribe(os.path.join(args.checkpoint,
+        scribe = Scribe(os.path.join(args["checkpoint"],
                                      "progress.txt"), title=title)
         scribe.set_names(['Learning Rate', 'Train Loss',
                           'Valid Loss', 'Train Acc.', 'Valid Acc.'])
 
-    if args.mode == "evaluate":
+    if args["mode"] == "evaluate":
         logging.info("Only evaluation")
         with torch.no_grad():
             test_loss, test_acc = test(
                 testloader, model, criterion, start_epoch)
         logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
                      "loss": test_loss, "acc": test_acc})
-    elif args.mode == "train":
-        for epoch in range(start_epoch, args.epochs):
+    elif args["mode"] == "train":
+        lr = args["lr"]
+        for epoch in range(start_epoch, args["epochs"]):
             lr = update_learning_rate(
-                args.lr, args.schedule, args.gamma, optimizer, epoch)
+                lr, args["schedule"], args["gamma"], optimizer, epoch)
             logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
-                         {"cur_epoch": epoch + 1, "epochs": args.epochs, "lr": lr})
+                         {"cur_epoch": epoch + 1, "epochs": args["epochs"], "lr": lr})
 
             train_loss, train_acc = train(
                 trainloader, model, criterion, optimizer, epoch)
@@ -150,7 +153,7 @@ def main(args):
                 "acc": test_acc,
                 "best_acc": best_acc,
                 "optimizer": optimizer.state_dict()
-            }, is_best, checkpoint=args.checkpoint)
+            }, is_best, checkpoint=args["checkpoint"])
 
 
 def train(trainloader, model, criterion, optimizer, epoch):
@@ -162,6 +165,8 @@ def test(testloader, model, criterion, epoch):
 
 
 def _pass(mode, dataloader, model, criterion, optimizer, epoch):
+    """Perform one train or test pass through the data
+    """
     batch_time = AverageMeter("Batch Time")
     data_time = AverageMeter("Data Time")
     losses = AverageMeter("Losses")
@@ -321,9 +326,9 @@ def parse_arguments():
     c_op.add_argument("--resume", default=_resume, type=str, metavar="PATH",
                       help=f"path to latest checkpoint (default: {_resume})")
 
-    return parser.parse_args()
+    return vars(parser.parse_args())
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
-    main(args)
+    options = parse_arguments()
+    main(**options)
