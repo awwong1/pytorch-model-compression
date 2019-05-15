@@ -11,14 +11,13 @@ import random
 import shutil
 import torch
 import torchvision.datasets as datasets
-import torchvision.models as models
 import torchvision.transforms as transforms
 from argparse import ArgumentParser
-from pprint import pformat
 from progress.bar import Bar
 from time import time
 from torch.utils.data import DataLoader
 
+import models.cifar as models
 from utils import AverageMeter, Scribe, accuracy
 
 MODEL_ARCHS = {name: value for name, value in inspect.getmembers(
@@ -27,21 +26,23 @@ USE_CUDA = torch.cuda.is_available()
 
 
 def main(**args):
+    logging.basicConfig(level=args["verbosity"], format="%(message)s")
+    logging.info("%s", repr(args))
+
     # Preliminary Setup
     if USE_CUDA:
         os.environ["CUDA_VISIBLE_DEVICES"] = args["gpu_id"]
-    if args["manual_seed"] is not None:
-        random.seed(args["manual_seed"])
-        torch.manual_seed(args["manual_seed"])
-        if USE_CUDA:
-            torch.cuda.manual_seed_all(args["manual_seed"])
+        logging.info("• CUDA is enabled")
+    seed = args["manual_seed"]
+    if seed is None:
+        seed = random.randint(1, 10000)
+        logging.info("• Random Seed: %d", seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if USE_CUDA:
+        torch.cuda.manual_seed_all(seed)
     if not os.path.isdir(args["checkpoint"]):
         os.makedirs(args["checkpoint"], exist_ok=True)
-
-    logging.basicConfig(level=args["verbosity"], format="%(message)s")
-    # format="%(asctime)s %(levelname)s %(message)s"
-
-    logging.info("• Options: %s", pformat(args))
 
     # Data
     logging.info("• Preparing '%(dataset)s' dataset", args)
@@ -76,10 +77,37 @@ def main(**args):
         testset, batch_size=args["test_batch"], shuffle=False, num_workers=args["workers"])
 
     # Model & Architecture
-    logging.info("• Initializing '%(arch)s' architecture", args)
-    # todo: don"t use imagenet defaults, reduce FC layers
-    model = MODEL_ARCHS.get(args["arch"])(
-        pretrained=False, num_classes=num_classes)
+    arch = args["arch"]
+    logging.info("• Initializing '%s' architecture", arch)
+
+    if arch == "resnext":
+        model = MODEL_ARCHS[arch](
+            cardinality=args["cardinality"],
+            num_classes=num_classes,
+            depth=args["depth"],
+            widen_factor=args["widen_factor"],
+            dropRate=args["drop"])
+    elif arch == "densenet":
+        model = MODEL_ARCHS[arch](
+            num_classes=num_classes,
+            depth=args["depth"],
+            growthRate=args["growth_rate"],
+            compressionRate=args["compression_rate"],
+            dropRate=args["drop"])
+    elif arch == "wrn":
+        model = MODEL_ARCHS[arch](
+            num_classes=num_classes,
+            depth=args["depth"],
+            widen_factor=args["widen_factor"],
+            dropRate=args["drop"])
+    elif arch.endswith("resnet"): # resnet & preresnet
+        model = MODEL_ARCHS[arch](
+            num_classes=num_classes,
+            depth=args["depth"],
+            block_name=args["block_name"])
+    else: # alexnet, vgg*
+        model = MODEL_ARCHS[arch](num_classes=num_classes)
+
     logging.debug("%(model)s", {"model": model})
 
     model = torch.nn.DataParallel(model)
@@ -102,7 +130,7 @@ def main(**args):
     # Resume & Initialize Progress Logger
     best_acc = 0
     start_epoch = args["start_epoch"]
-    title = args["dataset"] + "-" + args["arch"]
+    title = args["dataset"] + "-" + arch
     if args["resume"]:
         logging.info("• Loading from checkpoint")
         assert os.path.isfile(
@@ -157,14 +185,14 @@ def main(**args):
 
 
 def train(trainloader, model, criterion, optimizer, epoch):
-    return _pass("Train", trainloader, model, criterion, optimizer, epoch)
+    return run_pass("Train", trainloader, model, criterion, optimizer, epoch)
 
 
 def test(testloader, model, criterion, epoch):
-    return _pass("Test", testloader, model, criterion, None, epoch)
+    return run_pass("Test", testloader, model, criterion, None, epoch)
 
 
-def _pass(mode, dataloader, model, criterion, optimizer, epoch):
+def run_pass(mode, dataloader, model, criterion, optimizer, epoch):
     """Perform one train or test pass through the data
     """
     batch_time = AverageMeter("Batch Time")
@@ -249,11 +277,11 @@ def parse_arguments():
     """
     parser = ArgumentParser("CIFAR-10/100 Training")
     _verbosity = "INFO"
-    parser.add_argument("-v", "--verbosity", type=str, choices=logging._nameToLevel.keys(), default=_verbosity, metavar="VERBOSITY",
+    parser.add_argument("-v", "--verbosity", type=str.upper, choices=logging._nameToLevel.keys(), default=_verbosity, metavar="VERBOSITY",
                         help="output verbosity: {} (default: {})".format(" | ".join(logging._nameToLevel.keys()), _verbosity))
     parser.add_argument("--manual-seed", type=int, help="manual seed integer")
     _mode = "train"
-    parser.add_argument("-m", "--mode", type=str, default=_mode, choices=["train", "evaluate"],
+    parser.add_argument("-m", "--mode", type=str.lower, default=_mode, choices=["train", "evaluate"],
                         help=f"script execution mode (default: {_mode})")
     parser.add_argument("--gpu-id", default="0", type=str,
                         help="id(s) for CUDA_VISIBLE_DEVICES")
@@ -272,17 +300,24 @@ def parse_arguments():
     a_op.add_argument("-a", "--arch", metavar="ARCH", default=_architecture,
                       choices=MODEL_ARCHS.keys(),
                       help="model architecture: {} (default: {})".format(" | ".join(MODEL_ARCHS.keys()), _architecture))
-    # a_op.add_argument("--depth", type=int, default=29, help="Model depth.")
-    # a_op.add_argument("--block-name", type=str, default="BasicBlock",
-    #                   help="the building block for Resnet and Preresnet: BasicBlock, Bottleneck (default: Basicblock for cifar10/cifar100)")
-    # a_op.add_argument("--cardinality", type=int, default=8,
-    #                   help="Model cardinality (group).")
-    # a_op.add_argument("--widen-factor", type=int, default=4,
-    #                   help="Widen factor. 4 -> 64, 8 -> 128, ...")
-    # a_op.add_argument("--growthRate", type=int, default=12,
-    #                   help="Growth rate for DenseNet.")
-    # a_op.add_argument("--compressionRate", type=int, default=2,
-    #                   help="Compression Rate (theta) for DenseNet.")
+    _depth = 29
+    a_op.add_argument("--depth", type=int, default=_depth, help=f"Model depth (default: {_depth})")
+    _block_name = "basicblock"
+    _block_choices = ["basicblock", "bottleneck"]
+    a_op.add_argument("--block-name", type=str.lower, default=_block_name, choices=_block_choices,
+                      help=f"Resnet|Preresnet building block: (default: {_block_name}")
+    _cardinality = 8
+    a_op.add_argument("--cardinality", type=int, default=_cardinality,
+                      help=f"Resnext cardinality (group) (default: {_cardinality})")
+    _widen_factor = 4
+    a_op.add_argument("--widen-factor", type=int, default=_widen_factor,
+                      help=f"Resnext|WRT widen factor, 4 -> 64, 8 -> 128, ... (default: {_widen_factor})")
+    _growth_rate = 12
+    a_op.add_argument("--growth-rate", type=int, default=_growth_rate,
+                      help=f"DenseNet growth rate (default: {_growth_rate}")
+    _compression_rate = 2
+    a_op.add_argument("--compressionRate", type=int, default=_compression_rate,
+                      help=f"DenseNet compression rate (theta) (default: {_compression_rate}")
 
     # Optimization Options
     o_op = parser.add_argument_group("Optimizations")

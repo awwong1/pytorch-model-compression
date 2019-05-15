@@ -1,0 +1,1 @@
+All models defined in `cifar` have been taken verbatim from [bearpaw/pytorch-classification](https://github.com/bearpaw/pytorch-classification/tree/master/models/cifar)
