@@ -8,13 +8,17 @@ import inspect
 import logging
 import os
 import random
+import shutil
 import torch
 import torchvision.datasets as datasets
 import torchvision.models as models
 import torchvision.transforms as transforms
-
 from argparse import ArgumentParser
+from progress.bar import Bar
+from time import time
 from torch.utils.data import DataLoader
+
+from utils import AverageMeter, Scribe, accuracy
 
 MODEL_ARCHS = {name: value for name, value in inspect.getmembers(
     models) if inspect.isfunction(value) or inspect.ismodule(value)}
@@ -30,24 +34,25 @@ def main(args):
         torch.manual_seed(args.manual_seed)
         if USE_CUDA:
             torch.cuda.manual_seed_all(args.manual_seed)
+    if not os.path.isdir(args.checkpoint):
+        os.makedirs(args.checkpoint, exist_ok=True)
+
     logging.basicConfig(level=args.verbosity, format="%(message)s")
     # format="%(asctime)s %(levelname)s %(message)s"
 
     # Data
     logging.info("Preparing dataset %(dataset)s", {"dataset": args.dataset})
-    train_transforms = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
+    base_transforms = [
         transforms.ToTensor(),
         # https://github.com/kuangliu/pytorch-cifar/issues/19#issue-268972488
         transforms.Normalize((0.4914, 0.4822, 0.4465),
                              (0.2023, 0.1994, 0.2010)),
-    ])
-    test_transforms = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465),
-                             (0.2023, 0.1994, 0.2010)),
-    ])
+    ]
+    train_transforms = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+    ] + base_transforms)
+    test_transforms = transforms.Compose(base_transforms)
     if args.dataset == "cifar10":
         data_class = datasets.CIFAR10
         num_classes = 10
@@ -55,13 +60,14 @@ def main(args):
         data_class = datasets.CIFAR100
         num_classes = 100
     else:
-        raise NotImplementedError("{} Not implemented".format(args.dataset))
+        assert args.dataset in (
+            "cifar10", "cifar100"), f"Unsupported dataset: {args.dataset}"
 
-    trainset = data_class(root='./data', train=True,
+    trainset = data_class(root="./data", train=True,
                           download=True, transform=train_transforms)
     trainloader = DataLoader(
         trainset, batch_size=args.train_batch, shuffle=True, num_workers=args.workers)
-    testset = data_class(root='./data', train=False,
+    testset = data_class(root="./data", train=False,
                          download=False, transform=test_transforms)
     testloader = DataLoader(
         testset, batch_size=args.test_batch, shuffle=False, num_workers=args.workers)
@@ -69,6 +75,7 @@ def main(args):
     # Model & Architecture
     logging.info("Initializing model architecture \"%(arch)s\"",
                  {"arch": args.arch})
+    # todo: don"t use imagenet defaults, reduce FC layers
     model = MODEL_ARCHS.get(args.arch)(
         pretrained=False, num_classes=num_classes)
     logging.debug("%(model)s", {"model": model})
@@ -85,6 +92,152 @@ def main(args):
     logging.info("Number of parameters: %(params)d (%(learnable)d learnable)", {
                  "params": num_params, "learnable": num_learnable})
 
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+
+    # Resume & Initialize Progress Logger
+    title = f"{args.dataset}-{args.arch}"
+    if args.resume:
+        logging.info("• Loading from checkpoint")
+        assert os.path.isfile(
+            args.resume), f"Invalid checkpoint path: {args.resume}"
+        args.checkpoint = os.path.dirname(args.resume)
+        checkpoint = torch.load(args.resume)
+        best_acc = checkpoint["best_acc"]
+        start_epoch = checkpoint["epoch"]
+        model.load_state_dict(checkpoint["state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scribe = Scribe(os.path.join(args.checkpoint,
+                                     "progress.txt"), title=title, resume=True)
+    else:
+        best_acc = 0
+        start_epoch = args.start_epoch
+        scribe = Scribe(os.path.join(args.checkpoint,
+                                     "progress.txt"), title=title)
+        scribe.set_names(['Learning Rate', 'Train Loss',
+                          'Valid Loss', 'Train Acc.', 'Valid Acc.'])
+
+    if args.mode == "evaluate":
+        logging.info("Only evaluation")
+        with torch.no_grad():
+            test_loss, test_acc = test(
+                testloader, model, criterion, start_epoch)
+        logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
+                     "loss": test_loss, "acc": test_acc})
+    elif args.mode == "train":
+        for epoch in range(start_epoch, args.epochs):
+            lr = update_learning_rate(
+                args.lr, args.schedule, args.gamma, optimizer, epoch)
+            logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
+                         {"cur_epoch": epoch + 1, "epochs": args.epochs, "lr": lr})
+
+            train_loss, train_acc = train(
+                trainloader, model, criterion, optimizer, epoch)
+            with torch.no_grad():
+                test_loss, test_acc = test(testloader, model, criterion, epoch)
+
+            # append model progress
+            scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
+
+            # save the model
+            is_best = test_acc > best_acc
+            best_acc = max(test_acc, best_acc)
+            save_checkpoint({
+                "epoch": epoch + 1,
+                "state_dict": model.state_dict(),
+                "acc": test_acc,
+                "best_acc": best_acc,
+                "optimizer": optimizer.state_dict()
+            }, is_best, checkpoint=args.checkpoint)
+
+
+def train(trainloader, model, criterion, optimizer, epoch):
+    return _pass("Train", trainloader, model, criterion, optimizer, epoch)
+
+
+def test(testloader, model, criterion, epoch):
+    return _pass("Test", testloader, model, criterion, None, epoch)
+
+
+def _pass(mode, dataloader, model, criterion, optimizer, epoch):
+    batch_time = AverageMeter("Batch Time")
+    data_time = AverageMeter("Data Time")
+    losses = AverageMeter("Losses")
+    top1 = AverageMeter("Top 1 Accuracy")
+    top5 = AverageMeter("Top 5 Accuracy")
+    end = time()
+
+    if mode == "Train":
+        model.train()
+    elif mode == "Test":
+        model.eval()
+    else:
+        assert mode in ("Train", "Test"), f"Unsupported mode {mode}"
+
+    bar = Bar(mode, max=len(dataloader))
+    for batch_idx, (inputs, targets) in enumerate(dataloader):
+        # measure data loading time
+        data_time.update(time() - end)
+        if USE_CUDA:
+            inputs, targets = inputs.cuda(), targets.cuda()
+
+        # compute output
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+
+        # measure accuracy and record loss
+        # pylint: disable=unbalanced-tuple-unpacking
+        prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
+        losses.update(loss.data.item(), inputs.size(0))
+        top1.update(prec1.item(), inputs.size(0))
+        top5.update(prec5.item(), inputs.size(0))
+
+        if mode == "Train":
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # measure elapsed time
+        batch_time.update(time() - end)
+        end = time()
+
+        # plot progress
+        bar.suffix = "({batch}/{size}) Data: {data:.3f}s | Batch: {bt:.3f}s | Total: {total:} | ETA: {eta:} | Loss: {loss:.4f} | top1: {top1: .4f} | top5: {top5: .4f}".format(
+            batch=batch_idx + 1,
+            size=len(dataloader),
+            data=data_time.avg,
+            bt=batch_time.avg,
+            total=bar.elapsed_td,
+            eta=bar.eta_td,
+            loss=losses.avg,
+            top1=top1.avg,
+            top5=top5.avg,
+        )
+        bar.next()
+    bar.finish()
+    return (losses.avg, top1.avg)
+
+
+def update_learning_rate(lr, schedule, gamma, optimizer, epoch):
+    if epoch in schedule:
+        _lr = lr * gamma
+        logging.info("lr scheduled update from %(lr)f to %(_lr)f on epoch %(epoch)d", {
+                     "lr": lr, "_lr": _lr, "epoch": epoch})
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = _lr
+        lr = _lr
+    return lr
+
+
+def save_checkpoint(state, is_best, checkpoint='checkpoint', filename='checkpoint.pth.tar'):
+    filepath = os.path.join(checkpoint, filename)
+    torch.save(state, filepath)
+    if is_best:
+        shutil.copyfile(filepath, os.path.join(
+            checkpoint, 'model_best.pth.tar'))
+
 
 def parse_arguments():
     """Parse and return the command line arguments
@@ -94,8 +247,9 @@ def parse_arguments():
     parser.add_argument("-v", "--verbosity", type=str, choices=logging._nameToLevel.keys(), default=_verbosity, metavar="VERBOSITY",
                         help="output verbosity: {} (default: {})".format(" | ".join(logging._nameToLevel.keys()), _verbosity))
     parser.add_argument("--manual-seed", type=int, help="manual seed integer")
-    parser.add_argument("-e", "--evaluate", action="store_true",
-                        help="evaluate model on validation data")
+    _mode = "train"
+    parser.add_argument("-m", "--mode", type=str, default=_mode, choices=["train", "evaluate"],
+                        help=f"script execution mode (default: {_mode})")
     parser.add_argument("--gpu-id", default="0", type=str,
                         help="id(s) for CUDA_VISIBLE_DEVICES")
 

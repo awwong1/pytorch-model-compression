@@ -166,3 +166,4 @@ ENV/
 !.vscode/extensions.json
 
 data/*
+checkpoint/*
