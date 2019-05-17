@@ -13,7 +13,9 @@ import torch
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 from argparse import ArgumentParser
+from pprint import pformat
 from progress.bar import Bar
+from tempfile import NamedTemporaryFile
 from time import time
 from torch.utils.data import DataLoader
 
@@ -26,13 +28,26 @@ USE_CUDA = torch.cuda.is_available()
 
 
 def main(**args):
-    logging.basicConfig(level=args["verbosity"], format="%(message)s")
-    logging.info("%s", repr(args))
+    t_logfile = NamedTemporaryFile(mode="w+", suffix=".log")
+    logging.basicConfig(
+        level=args["verbosity"],
+        format="%(asctime)s: %(message)s",
+        # datefmt="%d/%m/%Y %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(t_logfile.name)
+        ])
+    logging.info("Execution options: %s", pformat(args))
 
     # Preliminary Setup
     if USE_CUDA:
         os.environ["CUDA_VISIBLE_DEVICES"] = args["gpu_id"]
         logging.info("• CUDA is enabled")
+        for device_id in args["gpu_id"].split():
+            device_id = int(device_id)
+            logging.info("%s", torch.cuda.get_device_name(device_id))
+    else:
+        logging.info("• CPU only (no CUDA)")
     seed = args["manual_seed"]
     if seed is None:
         seed = random.randint(1, 10000)
@@ -100,15 +115,15 @@ def main(**args):
             depth=args["depth"],
             widen_factor=args["widen_factor"],
             dropRate=args["drop"])
-    elif arch.endswith("resnet"): # resnet & preresnet
+    elif arch.endswith("resnet"):  # resnet & preresnet
         model = MODEL_ARCHS[arch](
             num_classes=num_classes,
             depth=args["depth"],
             block_name=args["block_name"])
-    else: # alexnet, vgg*
+    else:  # alexnet, vgg*
         model = MODEL_ARCHS[arch](num_classes=num_classes)
 
-    logging.debug("%(model)s", {"model": model})
+    logging.info("%s", model)
 
     model = torch.nn.DataParallel(model)
     if USE_CUDA:
@@ -158,30 +173,56 @@ def main(**args):
                      "loss": test_loss, "acc": test_acc})
     elif args["mode"] == "train":
         lr = args["lr"]
+        interrupted = False
         for epoch in range(start_epoch, args["epochs"]):
-            lr = update_learning_rate(
-                lr, args["schedule"], args["gamma"], optimizer, epoch)
-            logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
-                         {"cur_epoch": epoch + 1, "epochs": args["epochs"], "lr": lr})
+            train_loss, train_acc, test_loss, test_acc = 0, -1, 0, -1
+            try:
+                lr = update_learning_rate(
+                    lr, args["schedule"], args["gamma"], optimizer, epoch)
+                logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
+                             {"cur_epoch": epoch + 1, "epochs": args["epochs"], "lr": lr})
+                train_loss, train_acc = train(
+                    trainloader, model, criterion, optimizer, epoch)
+                with torch.no_grad():
+                    test_loss, test_acc = test(
+                        testloader, model, criterion, epoch)
+            except KeyboardInterrupt:
+                logging.warning(
+                    "Caught Keyboard Interrupt at epoch %d", epoch + 1)
+                interrupted = True
+            finally:
+                # append model progress
+                scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
 
-            train_loss, train_acc = train(
-                trainloader, model, criterion, optimizer, epoch)
-            with torch.no_grad():
-                test_loss, test_acc = test(testloader, model, criterion, epoch)
+                # save the model
+                is_best = test_acc > best_acc
+                best_acc = max(test_acc, best_acc)
+                save_checkpoint({
+                    "epoch": epoch + 1,
+                    "state_dict": model.state_dict(),
+                    "acc": test_acc,
+                    "best_acc": best_acc,
+                    "optimizer": optimizer.state_dict()
+                }, is_best, checkpoint=args["checkpoint"])
+            if interrupted:
+                break
 
-            # append model progress
-            scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
+    scribe.close()
+    scribe.plot(
+        plot_title="Training Accuracy Progress",
+        names=['Train Acc.', 'Valid Acc.'],
+        xlabel="Epoch", ylabel="Accuracy")
+    scribe.savefig(os.path.join(args["checkpoint"], "progress_acc.eps"))
+    scribe.plot(
+        plot_title="Training Loss Progress",
+        names=['Train Loss', 'Valid Loss'],
+        xlabel="Epoch", ylabel="Cross Entropy Loss")
+    scribe.savefig(os.path.join(args["checkpoint"], "progress_loss.eps"))
+    logging.info("Best evaluation accuracy: %f", best_acc)
+    logging.info("Results saved to %s", args["checkpoint"])
 
-            # save the model
-            is_best = test_acc > best_acc
-            best_acc = max(test_acc, best_acc)
-            save_checkpoint({
-                "epoch": epoch + 1,
-                "state_dict": model.state_dict(),
-                "acc": test_acc,
-                "best_acc": best_acc,
-                "optimizer": optimizer.state_dict()
-            }, is_best, checkpoint=args["checkpoint"])
+    shutil.copy(t_logfile.name, args["checkpoint"])
+    t_logfile.close()
 
 
 def train(trainloader, model, criterion, optimizer, epoch):
@@ -256,8 +297,6 @@ def run_pass(mode, dataloader, model, criterion, optimizer, epoch):
 def update_learning_rate(lr, schedule, gamma, optimizer, epoch):
     if epoch in schedule:
         _lr = lr * gamma
-        logging.info("lr scheduled update from %(lr)f to %(_lr)f on epoch %(epoch)d", {
-                     "lr": lr, "_lr": _lr, "epoch": epoch})
         for param_group in optimizer.param_groups:
             param_group["lr"] = _lr
         lr = _lr
@@ -290,7 +329,7 @@ def parse_arguments():
     d_op = parser.add_argument_group("Dataset")
     d_op.add_argument("-d", "--dataset", default="cifar10",
                       type=str, choices=("cifar10", "cifar100"))
-    avail_cpus = len(os.sched_getaffinity(0))
+    avail_cpus = min(4, len(os.sched_getaffinity(0)))
     d_op.add_argument("-w", "--workers", default=avail_cpus, type=int, metavar="N",
                       help=f"number of data-loader workers (default: {avail_cpus})")
 
@@ -301,7 +340,8 @@ def parse_arguments():
                       choices=MODEL_ARCHS.keys(),
                       help="model architecture: {} (default: {})".format(" | ".join(MODEL_ARCHS.keys()), _architecture))
     _depth = 29
-    a_op.add_argument("--depth", type=int, default=_depth, help=f"Model depth (default: {_depth})")
+    a_op.add_argument("--depth", type=int, default=_depth,
+                      help=f"Model depth (default: {_depth})")
     _block_name = "basicblock"
     _block_choices = ["basicblock", "bottleneck"]
     a_op.add_argument("--block-name", type=str.lower, default=_block_name, choices=_block_choices,

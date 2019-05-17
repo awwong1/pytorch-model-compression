@@ -51,7 +51,7 @@ class Scribe(object):
         self.file.write("\n")
         self.file.flush()
 
-    def plot(self, names=None, xlabel="Epoch", ylabel="Accuracy"):
+    def plot(self, plot_title=None, names=None, xlabel=None, ylabel=None):
         names = self.names if names is None else names
         numbers = self.numbers
         for name in names:
@@ -59,9 +59,20 @@ class Scribe(object):
             plt.plot(x, np.asarray(numbers[name]))
         plt.legend([f"{self.title}({name})" for name in names])
         plt.grid(True)
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
+        if plot_title is not None:
+            plt.title(plot_title)
+        if xlabel is not None:
+            plt.xlabel(xlabel)
+        if ylabel is not None:
+            plt.ylabel(ylabel)
 
     def close(self):
         if self.file:
             self.file.close()
+
+    @staticmethod
+    def savefig(fname, dpi=None):
+        if dpi is None:
+            dpi = 150
+        plt.savefig(fname, dpi=dpi)
+        plt.clf()
