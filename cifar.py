@@ -168,11 +168,12 @@ def main(**args):
         logging.info("Only evaluation")
         with torch.no_grad():
             with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
-                with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
-                    test_loss, test_acc = test(testloader, model, criterion)
-        logging.info(prof)
-        logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
-                     "loss": test_loss, "acc": test_acc})
+                test_loss, test_acc = test(testloader, model, criterion)
+            logging.info(prof)
+            logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
+                        "loss": test_loss, "acc": test_acc})
+            with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
+                test(testloader, model, criterion)
 
     elif args["mode"] == "train":
         lr = args["lr"]
