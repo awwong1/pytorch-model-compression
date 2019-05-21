@@ -167,10 +167,15 @@ def main(**args):
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
         with torch.no_grad():
-            test_loss, test_acc = test(
-                testloader, model, criterion, start_epoch)
+            test_loss, test_acc = test(testloader, model, criterion)
         logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
                      "loss": test_loss, "acc": test_acc})
+        with torch.cuda.profiler.profile():
+            # https://pytorch.org/docs/stable/autograd.html#torch.autograd.profiler.emit_nvtx
+            # warmup CUDA memory allocator and profiler
+            test(testloader, model, criterion)
+            with torch.autograd.profiler.emit_nvtx():
+                test(testloader, model, criterion)
     elif args["mode"] == "train":
         lr = args["lr"]
         interrupted = False
@@ -182,10 +187,9 @@ def main(**args):
                 logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
                              {"cur_epoch": epoch + 1, "epochs": args["epochs"], "lr": lr})
                 train_loss, train_acc = train(
-                    trainloader, model, criterion, optimizer, epoch)
+                    trainloader, model, criterion, optimizer)
                 with torch.no_grad():
-                    test_loss, test_acc = test(
-                        testloader, model, criterion, epoch)
+                    test_loss, test_acc = test(testloader, model, criterion)
             except KeyboardInterrupt:
                 logging.warning(
                     "Caught Keyboard Interrupt at epoch %d", epoch + 1)
@@ -207,33 +211,33 @@ def main(**args):
             if interrupted:
                 break
 
-    scribe.close()
-    scribe.plot(
-        plot_title="Training Accuracy Progress",
-        names=['Train Acc.', 'Valid Acc.'],
-        xlabel="Epoch", ylabel="Accuracy")
-    scribe.savefig(os.path.join(args["checkpoint"], "progress_acc.eps"))
-    scribe.plot(
-        plot_title="Training Loss Progress",
-        names=['Train Loss', 'Valid Loss'],
-        xlabel="Epoch", ylabel="Cross Entropy Loss")
-    scribe.savefig(os.path.join(args["checkpoint"], "progress_loss.eps"))
-    logging.info("Best evaluation accuracy: %f", best_acc)
-    logging.info("Results saved to %s", args["checkpoint"])
+        scribe.close()
+        scribe.plot(
+            plot_title="Training Accuracy Progress",
+            names=['Train Acc.', 'Valid Acc.'],
+            xlabel="Epoch", ylabel="Accuracy")
+        scribe.savefig(os.path.join(args["checkpoint"], "progress_acc.eps"))
+        scribe.plot(
+            plot_title="Training Loss Progress",
+            names=['Train Loss', 'Valid Loss'],
+            xlabel="Epoch", ylabel="Cross Entropy Loss")
+        scribe.savefig(os.path.join(args["checkpoint"], "progress_loss.eps"))
+        logging.info("Best evaluation accuracy: %f", best_acc)
+        logging.info("Results saved to %s", args["checkpoint"])
 
-    shutil.copy(t_logfile.name, args["checkpoint"])
-    t_logfile.close()
-
-
-def train(trainloader, model, criterion, optimizer, epoch):
-    return run_pass("Train", trainloader, model, criterion, optimizer, epoch)
+        shutil.copy(t_logfile.name, args["checkpoint"])
+        t_logfile.close()
 
 
-def test(testloader, model, criterion, epoch):
-    return run_pass("Test", testloader, model, criterion, None, epoch)
+def train(trainloader, model, criterion, optimizer):
+    return run_pass("Train", trainloader, model, criterion, optimizer)
 
 
-def run_pass(mode, dataloader, model, criterion, optimizer, epoch):
+def test(testloader, model, criterion):
+    return run_pass("Test", testloader, model, criterion, None)
+
+
+def run_pass(mode, dataloader, model, criterion, optimizer):
     """Perform one train or test pass through the data
     """
     batch_time = AverageMeter("Batch Time")
