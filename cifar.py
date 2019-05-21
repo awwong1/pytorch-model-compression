@@ -142,36 +142,36 @@ def main(**args):
         model.parameters(),
         lr=args["lr"], momentum=args["momentum"], weight_decay=args["weight_decay"])
 
-    # Resume & Initialize Progress Logger
-    best_acc = 0
-    start_epoch = args["start_epoch"]
-    title = args["dataset"] + "-" + arch
-    if args["resume"]:
-        logging.info("• Loading from checkpoint")
-        assert os.path.isfile(
-            args["resume"]), "Invalid checkpoint path: " + args["resume"]
-        args["checkpoint"] = os.path.dirname(args["resume"])
-        checkpoint = torch.load(args["resume"])
-        best_acc = checkpoint["best_acc"]
-        start_epoch = checkpoint["epoch"]
-        model.load_state_dict(checkpoint["state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scribe = Scribe(os.path.join(args["checkpoint"],
-                                     "progress.txt"), title=title, resume=True)
-    else:
-        scribe = Scribe(os.path.join(args["checkpoint"],
-                                     "progress.txt"), title=title)
-        scribe.set_names(['Learning Rate', 'Train Loss',
-                          'Valid Loss', 'Train Acc.', 'Valid Acc.'])
-
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
         with torch.no_grad():
-            test_loss, test_acc = test(
-                testloader, model, criterion, start_epoch)
+            test_loss, test_acc = test(testloader, model, criterion)
         logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
-                     "loss": test_loss, "acc": test_acc})
+            "loss": test_loss, "acc": test_acc})
+
     elif args["mode"] == "train":
+        # Resume & Initialize Progress Logger
+        best_acc = 0
+        start_epoch = args["start_epoch"]
+        title = args["dataset"] + "-" + arch
+        if args["resume"]:
+            logging.info("• Loading from checkpoint")
+            assert os.path.isfile(
+                args["resume"]), "Invalid checkpoint path: " + args["resume"]
+            args["checkpoint"] = os.path.dirname(args["resume"])
+            checkpoint = torch.load(args["resume"])
+            best_acc = checkpoint["best_acc"]
+            start_epoch = checkpoint["epoch"]
+            model.load_state_dict(checkpoint["state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            scribe = Scribe(os.path.join(args["checkpoint"],
+                                        "progress.txt"), title=title, resume=True)
+        else:
+            scribe = Scribe(os.path.join(args["checkpoint"],
+                                        "progress.txt", title=title))
+            scribe.set_names(['Learning Rate', 'Train Loss',
+                            'Valid Loss', 'Train Acc.', 'Valid Acc.'])
+
         lr = args["lr"]
         interrupted = False
         for epoch in range(start_epoch, args["epochs"]):
@@ -182,10 +182,9 @@ def main(**args):
                 logging.info("Epoch %(cur_epoch)d/%(epochs)d | LR: %(lr)f",
                              {"cur_epoch": epoch + 1, "epochs": args["epochs"], "lr": lr})
                 train_loss, train_acc = train(
-                    trainloader, model, criterion, optimizer, epoch)
+                    trainloader, model, criterion, optimizer)
                 with torch.no_grad():
-                    test_loss, test_acc = test(
-                        testloader, model, criterion, epoch)
+                    test_loss, test_acc = test(testloader, model, criterion)
             except KeyboardInterrupt:
                 logging.warning(
                     "Caught Keyboard Interrupt at epoch %d", epoch + 1)
@@ -207,33 +206,55 @@ def main(**args):
             if interrupted:
                 break
 
-    scribe.close()
-    scribe.plot(
-        plot_title="Training Accuracy Progress",
-        names=['Train Acc.', 'Valid Acc.'],
-        xlabel="Epoch", ylabel="Accuracy")
-    scribe.savefig(os.path.join(args["checkpoint"], "progress_acc.eps"))
-    scribe.plot(
-        plot_title="Training Loss Progress",
-        names=['Train Loss', 'Valid Loss'],
-        xlabel="Epoch", ylabel="Cross Entropy Loss")
-    scribe.savefig(os.path.join(args["checkpoint"], "progress_loss.eps"))
-    logging.info("Best evaluation accuracy: %f", best_acc)
-    logging.info("Results saved to %s", args["checkpoint"])
+        scribe.close()
+        scribe.plot(
+            plot_title="Training Accuracy Progress",
+            names=['Train Acc.', 'Valid Acc.'],
+            xlabel="Epoch", ylabel="Accuracy")
+        scribe.savefig(os.path.join(args["checkpoint"], "progress_acc.eps"))
+        scribe.plot(
+            plot_title="Training Loss Progress",
+            names=['Train Loss', 'Valid Loss'],
+            xlabel="Epoch", ylabel="Cross Entropy Loss")
+        scribe.savefig(os.path.join(args["checkpoint"], "progress_loss.eps"))
+        logging.info("Best evaluation accuracy: %f", best_acc)
+        logging.info("Results saved to %s", args["checkpoint"])
 
-    shutil.copy(t_logfile.name, args["checkpoint"])
-    t_logfile.close()
+        shutil.copy(t_logfile.name, args["checkpoint"])
+        t_logfile.close()
+
+    elif args["mode"] == "profile":
+        profiler_set = data_class(
+            root="./data", train=False, download=False, transform=test_transforms)
+        profiler_loader = DataLoader(profiler_set, batch_size=1, shuffle=False, num_workers=args["workers"])
+
+        logging.info("Only profiling one pass, one input")
+        for (inputs, _) in profiler_loader:
+            # single step through data_loader
+            break
+
+        with torch.no_grad():
+            if USE_CUDA:
+                with torch.cuda.profiler.profile() as prof:
+                    # warmup the CUDA memory allocator and profiler
+                    # model(inputs)
+                    with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
+                        model(inputs)
+            else:
+                with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
+                    model(inputs)
+            logging.info(prof)
 
 
-def train(trainloader, model, criterion, optimizer, epoch):
-    return run_pass("Train", trainloader, model, criterion, optimizer, epoch)
+def train(trainloader, model, criterion, optimizer):
+    return run_pass("Train", trainloader, model, criterion, optimizer)
 
 
-def test(testloader, model, criterion, epoch):
-    return run_pass("Test", testloader, model, criterion, None, epoch)
+def test(testloader, model, criterion):
+    return run_pass("Test", testloader, model, criterion, None)
 
 
-def run_pass(mode, dataloader, model, criterion, optimizer, epoch):
+def run_pass(mode, dataloader, model, criterion, optimizer):
     """Perform one train or test pass through the data
     """
     batch_time = AverageMeter("Batch Time")
@@ -320,7 +341,7 @@ def parse_arguments():
                         help="output verbosity: {} (default: {})".format(" | ".join(logging._nameToLevel.keys()), _verbosity))
     parser.add_argument("--manual-seed", type=int, help="manual seed integer")
     _mode = "train"
-    parser.add_argument("-m", "--mode", type=str.lower, default=_mode, choices=["train", "evaluate"],
+    parser.add_argument("-m", "--mode", type=str.lower, default=_mode, choices=["train", "evaluate", "profile"],
                         help=f"script execution mode (default: {_mode})")
     parser.add_argument("--gpu-id", default="0", type=str,
                         help="id(s) for CUDA_VISIBLE_DEVICES")
