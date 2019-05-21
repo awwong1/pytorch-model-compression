@@ -160,7 +160,7 @@ def main(**args):
                                      "progress.txt"), title=title, resume=True)
     else:
         scribe = Scribe(os.path.join(args["checkpoint"],
-                                     "progress.txt"), title=title)
+                                     "progress-{}".format(t_logfile.name)), title=title)
         scribe.set_names(['Learning Rate', 'Train Loss',
                           'Valid Loss', 'Train Acc.', 'Valid Acc.'])
 
@@ -233,16 +233,17 @@ def main(**args):
             # single step through data_loader
             break
 
-        if USE_CUDA:
-            with torch.cuda.profiler.profile() as prof:
-                # warmup the CUDA memory allocator and profiler
-                # model(inputs)
-                with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
+        with torch.no_grad():
+            if USE_CUDA:
+                with torch.cuda.profiler.profile() as prof:
+                    # warmup the CUDA memory allocator and profiler
+                    # model(inputs)
+                    with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
+                        model(inputs)
+            else:
+                with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
                     model(inputs)
-        else:
-            with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
-                model(inputs)
-        logging.info(prof)
+            logging.info(prof)
 
 
 def train(trainloader, model, criterion, optimizer):
