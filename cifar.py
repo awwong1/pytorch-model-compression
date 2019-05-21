@@ -142,28 +142,6 @@ def main(**args):
         model.parameters(),
         lr=args["lr"], momentum=args["momentum"], weight_decay=args["weight_decay"])
 
-    # Resume & Initialize Progress Logger
-    best_acc = 0
-    start_epoch = args["start_epoch"]
-    title = args["dataset"] + "-" + arch
-    if args["resume"]:
-        logging.info("• Loading from checkpoint")
-        assert os.path.isfile(
-            args["resume"]), "Invalid checkpoint path: " + args["resume"]
-        args["checkpoint"] = os.path.dirname(args["resume"])
-        checkpoint = torch.load(args["resume"])
-        best_acc = checkpoint["best_acc"]
-        start_epoch = checkpoint["epoch"]
-        model.load_state_dict(checkpoint["state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scribe = Scribe(os.path.join(args["checkpoint"],
-                                     "progress.txt"), title=title, resume=True)
-    else:
-        scribe = Scribe(os.path.join(args["checkpoint"],
-                                     "progress-{}".format(t_logfile.name)), title=title)
-        scribe.set_names(['Learning Rate', 'Train Loss',
-                          'Valid Loss', 'Train Acc.', 'Valid Acc.'])
-
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
         with torch.no_grad():
@@ -172,6 +150,28 @@ def main(**args):
             "loss": test_loss, "acc": test_acc})
 
     elif args["mode"] == "train":
+        # Resume & Initialize Progress Logger
+        best_acc = 0
+        start_epoch = args["start_epoch"]
+        title = args["dataset"] + "-" + arch
+        if args["resume"]:
+            logging.info("• Loading from checkpoint")
+            assert os.path.isfile(
+                args["resume"]), "Invalid checkpoint path: " + args["resume"]
+            args["checkpoint"] = os.path.dirname(args["resume"])
+            checkpoint = torch.load(args["resume"])
+            best_acc = checkpoint["best_acc"]
+            start_epoch = checkpoint["epoch"]
+            model.load_state_dict(checkpoint["state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            scribe = Scribe(os.path.join(args["checkpoint"],
+                                        "progress.txt"), title=title, resume=True)
+        else:
+            scribe = Scribe(os.path.join(args["checkpoint"],
+                                        "progress.txt", title=title))
+            scribe.set_names(['Learning Rate', 'Train Loss',
+                            'Valid Loss', 'Train Acc.', 'Valid Acc.'])
+
         lr = args["lr"]
         interrupted = False
         for epoch in range(start_epoch, args["epochs"]):
