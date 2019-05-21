@@ -167,3 +167,5 @@ ENV/
 
 data/*
 checkpoint/*
+*.prof
+checkpoints/*

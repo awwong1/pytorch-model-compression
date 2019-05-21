@@ -17,7 +17,20 @@ pip install -r requirements.txt
 # Profile & Evaluate Alexnet
 nvprof --profile-from-start off -o out.prof -- python3 cifar.py -a alexnet --checkpoint checkpoints/cifar10/alexnet/1 --mode evaluate 
 
+# Calculate number of floating point operations
+nvprof --metrics flop_count_dp --metrics flop_count_sp --metrics flop_count_sp_special --metrics flop_count_hp --profile-from-start off --export-profile out.prof --force-overwrite -- python3 cifar.py -a alexnet --checkpoint checkpoints/cifar10/alexnet/1 --mode profile 
 ```
+
+## nvprof Metrics
+* **flop_count_dp**
+  * Number of double-precision floating-point operations executed by non-predicated threads (add, multiply, and multiply-accumulate). Each multiply-accumulate operation contributes 2 to the count.
+* **flop_count_sp**
+  * Number of single-precision floating-point operations executed by non-predicated threads (add, multiply, and multiply-accumulate). Each multiply-accumulate operation contributes 2 to the count. The count does not include special operations.
+* **flop_count_sp_special**
+  * Number of single-precision floating-point special operations executed by non-predicated threads.
+* **flop_count_hp**
+  * Number of half-precision floating-point operations executed by non-predicated threads (add, multiply, and multiply-accumulate). Each multiply-accumulate operation contributes 2 to the count.
+
 
 ## License
 

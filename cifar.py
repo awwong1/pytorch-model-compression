@@ -166,18 +166,10 @@ def main(**args):
 
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
-        if USE_CUDA:
-            with torch.cuda.profiler.profile():
-                # warmup the CUDA memory allocator and profiler
-                test(testloader, model, criterion)
-                with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
-                    test_loss, test_acc = test(testloader, model, criterion)
-        else:
-            with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
-                test_loss, test_acc = test(testloader, model, criterion)
-            logging.info(prof)
+        with torch.no_grad():
+            test_loss, test_acc = test(testloader, model, criterion)
         logging.info('Test Loss:  %(loss).8f, Test Acc:  %(acc).2f', {
-                    "loss": test_loss, "acc": test_acc})
+            "loss": test_loss, "acc": test_acc})
 
     elif args["mode"] == "train":
         lr = args["lr"]
@@ -230,6 +222,27 @@ def main(**args):
 
         shutil.copy(t_logfile.name, args["checkpoint"])
         t_logfile.close()
+
+    elif args["mode"] == "profile":
+        profiler_set = data_class(
+            root="./data", train=False, download=False, transform=test_transforms)
+        profiler_loader = DataLoader(profiler_set, batch_size=1, shuffle=False, num_workers=args["workers"])
+
+        logging.info("Only profiling one pass, one input")
+        for (inputs, _) in profiler_loader:
+            # single step through data_loader
+            break
+
+        if USE_CUDA:
+            with torch.cuda.profiler.profile():
+                # warmup the CUDA memory allocator and profiler
+                model(inputs)
+                with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
+                    model(inputs)
+        else:
+            with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
+                model(inputs)
+            logging.info(prof)
 
 
 def train(trainloader, model, criterion, optimizer):
@@ -327,7 +340,7 @@ def parse_arguments():
                         help="output verbosity: {} (default: {})".format(" | ".join(logging._nameToLevel.keys()), _verbosity))
     parser.add_argument("--manual-seed", type=int, help="manual seed integer")
     _mode = "train"
-    parser.add_argument("-m", "--mode", type=str.lower, default=_mode, choices=["train", "evaluate"],
+    parser.add_argument("-m", "--mode", type=str.lower, default=_mode, choices=["train", "evaluate", "profile"],
                         help=f"script execution mode (default: {_mode})")
     parser.add_argument("--gpu-id", default="0", type=str,
                         help="id(s) for CUDA_VISIBLE_DEVICES")
