@@ -234,15 +234,15 @@ def main(**args):
             break
 
         if USE_CUDA:
-            with torch.cuda.profiler.profile():
+            with torch.cuda.profiler.profile() as prof:
                 # warmup the CUDA memory allocator and profiler
-                model(inputs)
+                # model(inputs)
                 with torch.autograd.profiler.emit_nvtx(enabled=USE_CUDA):
                     model(inputs)
         else:
             with torch.autograd.profiler.profile(use_cuda=USE_CUDA) as prof:
                 model(inputs)
-            logging.info(prof)
+        logging.info(prof)
 
 
 def train(trainloader, model, criterion, optimizer):
