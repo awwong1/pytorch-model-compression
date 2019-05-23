@@ -98,11 +98,11 @@ def main(**args):
 
     # Tensorwatch Initialization
     w = tw.Watcher(filename=args["tensorwatch_log"])
-    s_args = w.create_stream(name="script_args")
-    for k, v in args.items():
-        s_args.write((k, v))
-
-    input("Press any key once jupyter notebook ready...")
+    loss_stream = w.create_stream(name="train_loss")
+    acc_stream = w.create_stream(name="train_acc")
+    test_loss_stream = w.create_stream(name="test_loss")
+    test_acc_stream = w.create_stream(name="test_acc")
+    lr_stream = w.create_stream(name="lr")
 
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
@@ -169,14 +169,12 @@ def main(**args):
             finally:
                 # append model progress
                 scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
-                w.observe(
-                    epoch=epoch,
-                    lr=lr,
-                    train_loss=train_loss,
-                    test_loss=test_loss,
-                    train_acc=train_acc,
-                    test_acc=test_acc,
-                )
+                loss_stream.write((epoch, train_loss))
+                acc_stream.write((epoch, train_acc))
+                test_loss_stream.write((epoch, test_loss))
+                test_acc_stream.write((epoch, test_acc))
+                lr_stream.write((epoch, lr))
+
                 # save the model
                 is_best = test_acc > best_acc
                 best_acc = max(test_acc, best_acc)
