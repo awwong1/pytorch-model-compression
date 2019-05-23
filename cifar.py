@@ -101,10 +101,6 @@ def main(**args):
     s_args = w.create_stream(name="script_args")
     for k, v in args.items():
         s_args.write((k, v))
-    s_train_loss = w.create_stream(name="train_loss")
-    s_train_acc = w.create_stream(name="train_acc")
-    s_test_loss = w.create_stream(name="test_loss")
-    s_test_acc = w.create_stream(name="test_acc")
 
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
@@ -171,11 +167,7 @@ def main(**args):
             finally:
                 # append model progress
                 scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
-                s_train_loss.write((epoch, train_loss))
-                s_test_loss.write((epoch, test_loss))
-                s_train_acc.write((epoch, train_acc))
-                s_test_acc.write((epoch, test_acc))
-
+                w.observe(epoch=epoch, metrics=scribe.numbers, labels=scribe.names)
                 # save the model
                 is_best = test_acc > best_acc
                 best_acc = max(test_acc, best_acc)
