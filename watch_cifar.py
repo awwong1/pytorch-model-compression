@@ -3,11 +3,14 @@
 """
 import tensorwatch as tw
 import time
-
+from cifar import initialize_model
 
 def main():
+    # work in progress
     w = tw.Watcher(filename="tw_test.log")
     s = w.create_stream(name="my_metric")
+    model = initialize_model("alexnet", num_classes=10)
+    w.observe(model)
     w.make_notebook()
 
     for i in range(1000):

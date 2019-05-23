@@ -1,5 +1,5 @@
 
-def accuracy(output, target, topk=(1,)):
+def calculate_accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k
     Accuracy function taken from
     https://github.com/bearpaw/pytorch-classification/blob/24f1c456f48c78133088c4eefd182ca9e6199b03/utils/eval.py#L1

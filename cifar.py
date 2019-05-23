@@ -20,7 +20,7 @@ from time import time
 from torch.utils.data import DataLoader
 
 import models.cifar as models
-from utils import AverageMeter, Scribe, accuracy
+from utils import AverageMeter, Scribe, calculate_accuracy
 
 MODEL_ARCHS = {
     name: value
@@ -35,7 +35,6 @@ def main(**args):
     logging.basicConfig(
         level=args["verbosity"],
         format="%(asctime)s: %(message)s",
-        # datefmt="%d/%m/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(), logging.FileHandler(t_logfile.name)],
     )
     logging.info("Execution options: %s", pformat(args))
@@ -242,19 +241,13 @@ def initialize_dataloaders(dataset, workers=0, train_batch=1, test_batch=1):
         root="./data", train=True, download=True, transform=train_transforms
     )
     trainloader = DataLoader(
-        trainset,
-        batch_size=train_batch,
-        shuffle=True,
-        num_workers=workers,
+        trainset, batch_size=train_batch, shuffle=True, num_workers=workers
     )
     testset = data_class(
         root="./data", train=False, download=False, transform=test_transforms
     )
     testloader = DataLoader(
-        testset,
-        batch_size=test_batch,
-        shuffle=False,
-        num_workers=workers,
+        testset, batch_size=test_batch, shuffle=False, num_workers=workers
     )
     return num_classes, trainloader, testloader
 
@@ -341,7 +334,7 @@ def run_epoch_pass(mode, dataloader, model, criterion, optimizer):
 
         # measure accuracy and record loss
         # pylint: disable=unbalanced-tuple-unpacking
-        prec1, prec5 = accuracy(outputs.data, targets.data, topk=(1, 5))
+        prec1, prec5 = calculate_accuracy(outputs.data, targets.data, topk=(1, 5))
         losses.update(loss.data.item(), inputs.size(0))
         top1.update(prec1.item(), inputs.size(0))
         top5.update(prec5.item(), inputs.size(0))
