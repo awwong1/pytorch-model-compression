@@ -1,3 +1,3 @@
 from .average_meter import AverageMeter
-from .eval import accuracy
+from .eval import calculate_accuracy
 from .scribe import Scribe
