@@ -167,7 +167,7 @@ def main(**args):
             finally:
                 # append model progress
                 scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
-                w.observe(epoch=epoch, metrics=scribe.numbers, labels=scribe.names)
+                w.observe(epoch=epoch, lr=lr, train_loss=train_loss, test_loss=test_loss, train_acc=train_acc, test_acc=test_acc)
                 # save the model
                 is_best = test_acc > best_acc
                 best_acc = max(test_acc, best_acc)
