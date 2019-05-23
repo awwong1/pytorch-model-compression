@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import shutil
+import tensorwatch as tw
 import torch
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
@@ -95,6 +96,14 @@ def main(**args):
         weight_decay=args["weight_decay"],
     )
 
+    # Tensorwatch Initialization
+    w = tw.Watcher(filename=args["tensorwatch_log"])
+    w.observe(script_args=args, model=model)
+    s_train_loss = w.create_stream(name="train_loss")
+    s_train_acc = w.create_stream(name="train_acc")
+    s_test_loss = w.create_stream(name="test_loss")
+    s_test_acc = w.create_stream(name="test_acc")
+
     if args["mode"] == "evaluate":
         logging.info("Only evaluation")
         with torch.no_grad():
@@ -127,7 +136,7 @@ def main(**args):
             )
         else:
             scribe = Scribe(
-                os.path.join(args["checkpoint"], "progress.txt", title=title)
+                os.path.join(args["checkpoint"], "progress.txt"), title=title
             )
             scribe.set_names(
                 [
@@ -160,6 +169,10 @@ def main(**args):
             finally:
                 # append model progress
                 scribe.append((lr, train_loss, test_loss, train_acc, test_acc))
+                s_train_loss.write((epoch, train_loss))
+                s_test_loss.write((epoch, test_loss))
+                s_train_acc.write((epoch, train_acc))
+                s_test_acc.write((epoch, test_acc))
 
                 # save the model
                 is_best = test_acc > best_acc
@@ -407,6 +420,14 @@ def parse_arguments():
         default=_mode,
         choices=["train", "evaluate", "profile"],
         help=f"script execution mode (default: {_mode})",
+    )
+    _tw_file = "tw.log"
+    parser.add_argument(
+        "-t",
+        "--tensorwatch-log",
+        type=str,
+        default=_tw_file,
+        help=f"tensorwatch log filename (default: {_tw_file})",
     )
     parser.add_argument(
         "--gpu-id", default="0", type=str, help="id(s) for CUDA_VISIBLE_DEVICES"
