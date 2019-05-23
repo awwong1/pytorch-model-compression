@@ -99,7 +99,8 @@ def main(**args):
     # Tensorwatch Initialization
     w = tw.Watcher(filename=args["tensorwatch_log"])
     s_args = w.create_stream(name="script_args")
-    s_args.write(args)
+    for k, v in args.items():
+        s_args.write((k, v))
     s_train_loss = w.create_stream(name="train_loss")
     s_train_acc = w.create_stream(name="train_acc")
     s_test_loss = w.create_stream(name="test_loss")
